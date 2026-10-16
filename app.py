@@ -1,134 +1,97 @@
 
 from flask import Flask, jsonify, request, render_template_string
+import time
+import uuid
 
 app = Flask(__name__)
 
-device_state = {"command": "LED_ON"}
+device_state = {
+    "command": "LED_OFF",
+    "command_id": "initial",
+    "click_time_ms": 0,
+    "server_received_ms": 0
+}
 
 PAGE = """
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ESP32 Control Panel</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            background: #101827;
-            color: white;
-            text-align: center;
-            padding: 50px 20px;
-        }
-        .panel {
-            max-width: 400px;
-            margin: auto;
-            padding: 30px;
-            background: #1e293b;
-            border-radius: 16px;
-        }
-        button {
-            padding: 14px 28px;
-            margin: 10px 5px;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 16px;
-        }
-        .on { background: #22c55e; color: #052e16; }
-        .off { background: #ef4444; color: white; }
-        #status { font-size: 24px; margin: 25px 0; }
-        #message { color: #cbd5e1; font-size: 14px; }
-    </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ESP32 Cloud Control</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      margin: 40px auto;
+      max-width: 500px;
+    }
+    button {
+      padding: 14px 25px;
+      margin: 8px;
+      font-size: 18px;
+      cursor: pointer;
+    }
+    #status {
+      margin-top: 20px;
+      white-space: pre-wrap;
+    }
+  </style>
 </head>
 <body>
-    <div class="panel">
-        <h1>ESP32 Control Panel</h1>
-        <p>Cloud-connected LED controller</p>
+  <h2>ESP32 Cloud Control</h2>
+  <button onclick="sendCommand('LED_ON')">Turn ON</button>
+  <button onclick="sendCommand('LED_OFF')">Turn OFF</button>
+  <p id="status">Ready</p>
 
-        <div id="status">Checking status...</div>
+  <script>
+    async function sendCommand(command) {
+      const clickTime = Date.now();
+      const commandId = crypto.randomUUID();
+      const status = document.getElementById("status");
 
-        <button class="on" onclick="setCommand('LED_ON')">
-            Turn ON
-        </button>
+      status.textContent = "Sending " + command + "...";
 
-        <button class="off" onclick="setCommand('LED_OFF')">
-            Turn OFF
-        </button>
+      try {
+        const response = await fetch("/command", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            command: command,
+            command_id: commandId,
+            click_time_ms: clickTime
+          })
+        });
 
-        <p id="message">Connecting to API...</p>
-    </div>
+        const result = await response.json();
+        const responseTime = Date.now() - clickTime;
 
-    <script>
-        function showCommand(command) {
-            document.getElementById("status").textContent =
-                command === "LED_ON" ? "LED is ON 💡" :
-                command === "LED_OFF" ? "LED is OFF 🌑" :
-                "Unknown status";
-        }
-
-        async function getCommand() {
-            try {
-                const response = await fetch("/command");
-                if (!response.ok) throw new Error("API error");
-
-                const data = await response.json();
-                showCommand(data.command);
-
-                document.getElementById("message").textContent =
-                    "Command received from API";
-            } catch (error) {
-                document.getElementById("message").textContent =
-                    "Could not read command from API";
-            }
-        }
-
-        async function setCommand(command) {
-            const message = document.getElementById("message");
-            message.textContent = "Sending command...";
-
-            try {
-                const response = await fetch("/command", {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify({ command: command })
-                });
-
-                const data = await response.json();
-
-                if (!response.ok) {
-                    throw new Error(data.error || "Request failed");
-                }
-
-                showCommand(data.command);
-                message.textContent =
-                    "Command sent: " + data.command;
-            } catch (error) {
-                message.textContent = "Error: " + error.message;
-            }
-        }
-
-        getCommand();
-    </script>
+        status.textContent =
+          "Command: " + command +
+          "\\nID: " + commandId +
+          "\\nPOST round-trip: " + responseTime + " ms" +
+          "\\nHTTP status: " + response.status +
+          "\\nServer received: " + result.server_received_ms;
+      } catch (error) {
+        status.textContent = "Request failed: " + error;
+      }
+    }
+  </script>
 </body>
 </html>
 """
-
 
 @app.get("/")
 def home():
     return render_template_string(PAGE)
 
-
 @app.get("/command")
 def get_command():
     return jsonify(device_state)
 
-
 @app.post("/command")
 def set_command():
+    global device_state
+
     data = request.get_json(silent=True) or {}
     command = data.get("command")
 
@@ -137,9 +100,16 @@ def set_command():
             "error": "Command must be LED_ON or LED_OFF"
         }), 400
 
-    device_state["command"] = command
+    received_ms = int(time.time() * 1000)
+
+    device_state = {
+        "command": command,
+        "command_id": data.get("command_id", str(uuid.uuid4())),
+        "click_time_ms": data.get("click_time_ms", 0),
+        "server_received_ms": received_ms
+    }
 
     return jsonify({
         "success": True,
-        "command": device_state["command"]
+        **device_state
     })
